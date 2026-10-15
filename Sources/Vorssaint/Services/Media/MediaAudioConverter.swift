@@ -106,19 +106,21 @@ enum MediaAudioConverter {
         }
 
         if let tag = id3Tag(source.tag) { try handle.write(contentsOf: tag) }
-        var samples: [Float] = []
         while let buffer = output.copyNextSampleBuffer() {
             if isCancelled() {
                 reader.cancelReading()
                 throw ConvertError.cancelled
             }
             guard let block = CMSampleBufferGetDataBuffer(buffer) else { continue }
-            let length = CMBlockBufferGetDataLength(block)
-            samples = [Float](repeating: 0, count: length / MemoryLayout<Float>.size)
-            guard CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length,
-                                             destination: &samples) == kCMBlockBufferNoErr else {
-                throw ConvertError.failed("Audio could not be read.")
+            let count = CMBlockBufferGetDataLength(block) / MemoryLayout<Float>.size
+            guard count > 0 else { continue }
+            var copied = false
+            let samples = [Float](unsafeUninitializedCapacity: count) { storage, initialized in
+                copied = CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: count * MemoryLayout<Float>.size,
+                                                    destination: storage.baseAddress!) == kCMBlockBufferNoErr
+                initialized = copied ? count : 0
             }
+            guard copied else { throw ConvertError.failed("Audio could not be read.") }
             try handle.write(contentsOf: samples.withUnsafeBufferPointer { encoder.encode(interleaved: $0) })
             let end = CMSampleBufferGetPresentationTimeStamp(buffer) + CMSampleBufferGetDuration(buffer)
             if source.duration > 0, end.seconds.isFinite {
